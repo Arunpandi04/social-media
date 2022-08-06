@@ -1,6 +1,7 @@
 import userModal from '../Modal/userModal';
 import postModal from '../Modal/postModal';
 import commentModal from '../Modal/commentModal';
+import { chatModal } from '../Modal/chatsModal';
 import { authentication } from '../Middleware/auth'
 import generateToken from '../Utils/tokenGenerator';
 import sendMail from '../Utils/sendMail';
@@ -24,12 +25,11 @@ const getUserRoutes = (router) => {
                 firstName,
                 lastName,
                 email,
-                password,
+                password: password.toString(),
             });
-            console.log("result",user)
             await sendMail(user._id, email, 'email verification');
             const data = {
-                data: user,
+                user: user,
                 message: "Signup Successfully",
                 accessToken: generateToken(user._id,'access'),
                 refreshToken: generateToken(user._id,'refresh'),
@@ -50,14 +50,19 @@ const getUserRoutes = (router) => {
             if(!user.isConfirmed) {
                 res.status(401).send({message: 'Your Account is not verified'}); 
             }
-            if(user.password === password) {
+            // if(user.onlineUser) {
+            //     res.status(401).send({message: 'User Already logged in'}); 
+            // }
+            if(user.password.toString() === password) {
+                user.onlineUser = true
+                await user.save();
             const data = {
-                data: user,
+                user: user,
                 message: 'Signin Successfully',
                 accessToken: generateToken(user._id,'access'),
-                refreshToken: generateToken(result._id,'refresh'),
+                refreshToken: generateToken(user._id,'refresh'),
             };
-                res.status(200).send({data: data}); 
+                res.status(200).send(data); 
             } else{
                 res.status(401).send({message: 'Password Incorrect'});
             }
@@ -66,15 +71,107 @@ const getUserRoutes = (router) => {
         }
     });
 
+    router.post('/logout',async(req,res) => {
+        try {
+            const { id }= req.body;
+            const user = await userModal.findById(id);
+              user.onlineUser = false;
+              await user.save();
+              res.status(200).send(user);
+        } catch(err) {
+            res.status(500).send({ message: err.message });
+        }
+    });
+
+    // router.get('/update-user/:id',authentication,async(req,res) => {
+    //     try {
+    //         const id = req.params.id;
+    //         const user = await userModal.findById(id);
+    //           user.onlineUser = false;
+    //     } catch(err) {
+
+    //     }
+    // });
+
+    router.get('/get-user/:id',authentication,async(req,res) => {
+        try {
+            const id = req.params.id;
+            const user = await userModal.findById(id)
+            .select('-password')
+            .populate({ path: 'followers.user', model: 'user'})
+            .populate({ path: 'following.user', model: 'user'});
+            if(!user) {
+                res.status(400).send({message: 'User Not Found' });
+            }
+            res.status(200).send(user);
+        } catch(error) {
+            res.status(500).send({message: error.message});
+        }
+    })
+
+    router.get('/get-alluser',authentication,async(req,res) => {
+        try {
+            const { offset,limit } = req.query;
+            console.log("resss",res.locals.data.id);
+            const user = await userModal.find({ "_id": { "$ne": res.locals.data.id } })
+            .select('-password').populate({ path: 'followers.user', model: 'user'})
+            .populate({ path: 'following.user', model: 'user'})
+            .skip(offset)
+            .limit(limit);
+            let total = await userModal.countDocuments()
+            res.status(200).send({user,total});
+        } catch(error) {
+            res.status(500).send({message: error.message});
+        }
+    })
+
+    router.get('/search/:keyword',authentication,async(req,res) => {
+        try {
+            const { keyword } = req.params;
+            console.log("keyword",keyword)
+            if(!keyword) {
+                console.log("keyword not found")
+            }
+            const regex = new RegExp(keyword, "i");
+            const curUser = await userModal.findById(res.locals.data.id)
+            .select('-password').populate({ path: 'followers.user', model: 'user'})
+            .populate({ path: 'following.user', model: 'user'});
+           const fUser = curUser.followers.length > 0 ? curUser.followers.map((e) => {
+                return e.user.email
+            }) : [];
+            const tUser = curUser.following.length > 0 ? curUser.following.map((e) => {
+                return e.user.email
+            }) : [];
+            const user = await userModal.find({ 
+                "$or": [
+                    { firstName: regex },
+                    { lastName: regex  }
+                ]
+            })
+            .select('-password')
+            .populate({ path: 'followers.user', model: 'user'})
+            .populate({ path: 'following.user', model: 'user'})
+            const data = user.map(e => {
+                if(fUser.includes(e.email) || tUser.includes(e.email)) {
+                    return e;
+                }
+            }).filter(f => f !== undefined);
+              res.status(200).send(data);
+        } catch(error) {
+            res.status(500).send({message: error.message});
+        }
+    })
+
     router.put('/user-verification/:token',async(req,res) => {
         try {
+            
             const emailToken = req.params.token;
-            if (emailToken) return res.status(400).send({ message: "Email Verification Token inValid" });
+            if (!emailToken) return res.status(400).send({ message: "Email Verification Token inValid" });
 
-            const decodedToken = jwt.verify(emailToken,process.env.JWT_EMAIL_TOKEN_SECRET, (err,decoded) => {
-                if (err) return res.status(401).send({ message: "Email Token inValid" })
+            const decodedToken = await jwt.verify(emailToken,process.env.JWT_EMAIL_TOKEN_SECRET, (err,decoded) => {
+                if (err) return res.status(401).send({ message: "Email Verification Token Expired" })
+                return decoded;
               })
-
             const user = await userModal.findById(decodedToken.id).select('-password');
             user.isConfirmed = true;
             const updatedUser = await user.save();
@@ -89,7 +186,7 @@ const getUserRoutes = (router) => {
         }
     });
 
-    router.get('/email-verification',async(req,res) => {
+    router.post('/email-verification',async(req,res) => {
         try {
             const { email } = req.body;
             const user = await userModal.findOne({ email });
@@ -117,10 +214,11 @@ const getUserRoutes = (router) => {
     router.put('/reset-password',async(req,res) => {
         try {
             const { passwordToken, password } = req.body;
-            if (passwordToken) return res.status(400).send({ message: 'Password Token inValid'});
+            if (!passwordToken) return res.status(400).send({ message: 'Password Token inValid'});
 
-            const decodedToken = jwt.verify(passwordToken,process.env.JWT_EMAIL_TOKEN_SECRET, (err,decoded) => {
-                if (err) return res.status(401).send({ message: 'Password Token inValid' })
+            const decodedToken = await jwt.verify(passwordToken,process.env.JWT_EMAIL_TOKEN_SECRET, (err,decoded) => {
+                if (err) return res.status(401).send({ message: 'Password Token Expired' })
+                return decoded
             });
             const user = await userModal.findById(decodedToken.id).select('-password');
             if (user && password) {
@@ -153,22 +251,23 @@ const getUserRoutes = (router) => {
         }
     });
 
-    router.get('/user/:id', authentication ,async (req, res) => {
-        try {
-            const posts = await userModal.findById(req.params.id);
-            res.status(200).send(posts)
-        } catch (err) {
-            res.status(500).send({ message: err.message });
-        }
-    });
-
     router.post('/follow/:id', async (req, res) => {
         try {
             const { id } = req.body;
             const user = await userModal.findById(req.params.id);
             const follower = await userModal.findById(id);
-            user.followers.push(id);
-            follower.following.push(req.params.id);
+            const fromChat = await chatModal.find().where('from').equals(follower.email).where('to').equals(user.email);
+            const toChat = await chatModal.find().where('to').equals(follower.email).where('from').equals(user.email);
+            const followUser = {
+              user: follower._id,
+              chat: [...fromChat,...toChat]
+            }
+            const followingUser = {
+                user: user._id,
+                chat: [...fromChat,...toChat]
+              }
+            user.followers.push(followUser);
+            follower.following.push(followingUser);
             if(!follower) {
                 res.status(404).send({data:"Following user not exist"}); 
             }
@@ -185,8 +284,8 @@ const getUserRoutes = (router) => {
             const { id } = req.body;
             const user = await userModal.findById(req.params.id);
             const follower = await userModal.findById(id);
-            user.followers.splice(user.followers.findIndex(e => e === toId(id)),1);
-            follower.following.splice(follower.following.findIndex(e => e === toId(req.params.id)),1);
+            user.followers.splice(user.followers.findIndex(({user}) => user === toId(id)),1);
+            follower.following.splice(follower.following.findIndex(({user}) => user === toId(req.params.id)),1);
             if(!follower) {
                 res.status(404).send({data:"Following user not exist"}); 
             }
@@ -204,7 +303,7 @@ const getUserRoutes = (router) => {
         jwt.verify(token, process.env.JWT_REFRESH_TOKEN_SECRET, (err, decoded) => {
              if (err) return res.status(401).send({data: { message: "Refresh Token inValid" }})
              const token = generateToken(decoded.data.id,'access');
-             return res.status(200).send({data:{ token }});
+             return res.status(200).send(token);
          });
     });
 

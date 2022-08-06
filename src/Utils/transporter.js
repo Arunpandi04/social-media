@@ -6,7 +6,7 @@ dotenv.config();
     host: "smtp.mailtrap.io",
     port: 2525,
     auth: {
-      user: process.env.USER,
+      user: process.env.USER_NAME,
       pass: process.env.PASSWORD
     }
   });

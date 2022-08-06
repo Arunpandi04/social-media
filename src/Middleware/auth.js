@@ -6,7 +6,7 @@ export const authentication = (req, res, next) => {
 
     jwt.verify(token,process.env.JWT_ACCESS_TOKEN_SECRET, (err,decoded) => {
       if (err) return res.status(401).send({ message: "Unauthorized User Token inValid" })
-      res.locals.data = decoded.data;
+      res.locals.data = decoded;
       next();
     })
   };

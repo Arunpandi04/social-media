@@ -17,7 +17,7 @@ const postSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId, 
     ref : 'user'  
     }]
-});
+},{ timestamps: true });
 
 const  postModal = mongoose.model('post', postSchema);
 export default postModal;
